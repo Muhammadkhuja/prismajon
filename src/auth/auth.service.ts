@@ -1,7 +1,8 @@
 import {
-    BadGatewayException,
+  BadGatewayException,
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
 } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
@@ -9,7 +10,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { CreateUserDto, SignInUserDto } from "../users/dto";
 import * as bcrypt from "bcrypt";
 import { User } from "../../generated/prisma";
-import { Response } from "express";
+import { Request, Response } from "express";
 
 @Injectable()
 export class AuthService {
@@ -23,7 +24,7 @@ export class AuthService {
       id: user.id,
       is_active: user.is_active,
       email: user.email,
-      name: user.name
+      name: user.name,
     };
     const [accessToken, refreshToken] = await Promise.all([
       this.jwtService.signAsync(payload, {
@@ -42,7 +43,7 @@ export class AuthService {
   }
 
   async signup(createUserDto: CreateUserDto, res: Response) {
-     const {name, email, password, confirm_password} = createUserDto;
+    const { name, email, password, confirm_password } = createUserDto;
     const condinate = await this.prismaService.user.findUnique({
       where: { email },
     });
@@ -66,40 +67,80 @@ export class AuthService {
         maxAge: Number(process.env.COOKIE_TIME),
         httpOnly: true,
       };
-    return { message: "singup", accessToken:tokens.accessToken}
-
+    return { message: "singup", accessToken: tokens.accessToken };
   }
   async updateRefreshToken(id: number, refresh_token: string) {
     await this.prismaService.user.update({
-        where: {id},
-        data: { hashed_refresh_token: refresh_token}
-    })
+      where: { id },
+      data: { hashed_refresh_token: refresh_token },
+    });
   }
 
-  async signin(signinUserDto: SignInUserDto, res: Response){
-    const { password, email } = signinUserDto
+  async signin(signinUserDto: SignInUserDto, res: Response) {
+    const { password, email } = signinUserDto;
 
     const user = await this.prismaService.user.findUnique({
-        where: { email }
-    })
-    if(!user){
-        throw new BadGatewayException("email yoki password xato 1")
+      where: { email },
+    });
+    if (!user) {
+      throw new BadGatewayException("email yoki password xato 1");
     }
-    const passwordMatched = await bcrypt.compare(password, user.hashed_password)
-    if(!passwordMatched){
-        throw new BadGatewayException("email yoki password xato 2");
+    const passwordMatched = await bcrypt.compare(
+      password,
+      user.hashed_password
+    );
+    if (!passwordMatched) {
+      throw new BadGatewayException("email yoki password xato 2");
     }
 
-    const tokens = await this.UsergenerateToken(user)
+    const tokens = await this.UsergenerateToken(user);
 
-    const hashed_refresh_token = await bcrypt.hash(tokens.refreshToken, 7)
-    await this.updateRefreshToken(user.id, hashed_refresh_token)
+    const hashed_refresh_token = await bcrypt.hash(tokens.refreshToken, 7);
+    await this.updateRefreshToken(user.id, hashed_refresh_token);
 
     res.cookie("refreshToken", tokens.refreshToken, {
-        maxAge: Number(process.env.COOKIE_TIME),
-        httpOnly: true,
-      })
-    return { message: "Sign in", accessToken:tokens.accessToken}
+      maxAge: Number(process.env.COOKIE_TIME),
+      httpOnly: true,
+    });
+    return { message: "Sign in", accessToken: tokens.accessToken };
+  }
 
+  async UserrefreshToken(req: Request, res: Response) {
+    const refresh_token = req.cookies["refreshToken"];
+
+    if (!refresh_token) {
+      throw new ForbiddenException("Refresh token yo'q");
     }
+
+    const users = await this.prismaService.user.findMany({
+      where: {
+        hashed_refresh_token: {
+          not: null,
+        },
+      },
+    });
+
+    const user = users.find((user) =>
+      bcrypt.compareSync(refresh_token, user.hashed_refresh_token!)
+    );
+
+    if (!user) {
+      throw new ForbiddenException("Refresh token noto'g'ri");
+    }
+
+    const tokens = await this.UsergenerateToken(user);
+    const hashed_refresh_token = await bcrypt.hash(tokens.refreshToken, 7);
+
+    await this.updateRefreshToken(user.id, hashed_refresh_token);
+
+    res.cookie("refresh_token", tokens.refreshToken, {
+      maxAge: Number(process.env.COOKIE_TIME),
+      httpOnly: true,
+    });
+
+    return {
+      message: "Token refresh qilindi",
+      accessToken: tokens.accessToken,
+    };
+  }
 }
