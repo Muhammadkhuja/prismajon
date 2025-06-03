@@ -11,6 +11,8 @@ import { CreateUserDto, SignInUserDto } from "../users/dto";
 import * as bcrypt from "bcrypt";
 import { User } from "../../generated/prisma";
 import { Request, Response } from "express";
+import { jwtPayload, ResponseFilds, Tokens } from "../common/types";
+import { use } from "passport";
 
 @Injectable()
 export class AuthService {
@@ -19,12 +21,12 @@ export class AuthService {
     private readonly prismaService: PrismaService
   ) {}
 
-  async UsergenerateToken(user: User) {
-    const payload = {
+  async UsergenerateToken(user: User): Promise<Tokens> {
+    const payload: jwtPayload = {
       id: user.id,
       is_active: user.is_active,
       email: user.email,
-      name: user.name,
+      // name: user.name,
     };
     const [accessToken, refreshToken] = await Promise.all([
       this.jwtService.signAsync(payload, {
@@ -67,7 +69,7 @@ export class AuthService {
         maxAge: Number(process.env.COOKIE_TIME),
         httpOnly: true,
       };
-    return { message: "singup", accessToken: tokens.accessToken };
+    return { message: "singup", accessToken: tokens.accessToken, id: user.id };
   }
   async updateRefreshToken(id: number, refresh_token: string) {
     await this.prismaService.user.update({
@@ -102,45 +104,94 @@ export class AuthService {
       maxAge: Number(process.env.COOKIE_TIME),
       httpOnly: true,
     });
-    return { message: "Sign in", accessToken: tokens.accessToken };
+    return { message: "Sign in", id: user.id, accessToken: tokens.accessToken };
   }
 
-  async UserrefreshToken(req: Request, res: Response) {
-    const refresh_token = req.cookies["refreshToken"];
+  // async UserrefreshToken(req: Request, res: Response) {
+  //   const refresh_token = req.cookies["refreshToken"];
 
-    if (!refresh_token) {
-      throw new ForbiddenException("Refresh token yo'q");
-    }
+  //   if (!refresh_token) {
+  //     throw new ForbiddenException("Refresh token yo'q");
+  //   }
 
-    const users = await this.prismaService.user.findMany({
+  //   const users = await this.prismaService.user.findMany({
+  //     where: {
+  //       hashed_refresh_token: {
+  //         not: null,
+  //       },
+  //     },
+  //   });
+
+  //   const user = users.find((user) =>
+  //     bcrypt.compareSync(refresh_token, user.hashed_refresh_token!)
+  //   );
+
+  //   if (!user) {
+  //     throw new ForbiddenException("Refresh token noto'g'ri");
+  //   }
+
+  //   const tokens = await this.UsergenerateToken(user);
+  //   const hashed_refresh_token = await bcrypt.hash(tokens.refreshToken, 7);
+
+  //   await this.updateRefreshToken(user.id, hashed_refresh_token);
+
+  //   res.cookie("refresh_token", tokens.refreshToken, {
+  //     maxAge: Number(process.env.COOKIE_TIME),
+  //     httpOnly: true,
+  //   });
+
+  //   return {
+  //     message: "Token refresh qilindi",
+
+  //     accessToken: tokens.accessToken,
+  //   };
+  // }
+
+  async refreshToken(
+    userId: number,
+    refreshToken: string,
+    res: Response
+  ): Promise<ResponseFilds> {
+    const user = await this.prismaService.user.findUnique({
+      where: { id: userId },
+    });
+    if (!user || !user.hashed_refresh_token)
+      throw new ForbiddenException("Access Denied1");
+    const rtMatches = await bcrypt.compare(
+      refreshToken,
+      user.hashed_refresh_token
+    );
+    if (!rtMatches) throw new ForbiddenException("Access Denied2");
+    const tokens: Tokens = await this.UsergenerateToken(user);
+    const hashed_refresh_token = await bcrypt.hash(tokens.refreshToken, 7);
+    await this.updateRefreshToken(user.id, hashed_refresh_token);
+    res.cookie("refreshToken", tokens.refreshToken, {
+      maxAge: +process.env.COOKIE_TIME!,
+      httpOnly: true,
+    });
+    return {
+      message: "Tokenlar yangilandi",
+      id: user.id,
+      accessToken: tokens.accessToken,
+    };
+  }
+
+  async singout(
+    userId: number, res: Response
+  ): Promise<boolean> {
+    const user = await this.prismaService.user.updateMany({
       where: {
+        id: userId,
         hashed_refresh_token: {
           not: null,
         },
       },
-    });
-
-    const user = users.find((user) =>
-      bcrypt.compareSync(refresh_token, user.hashed_refresh_token!)
-    );
-
-    if (!user) {
-      throw new ForbiddenException("Refresh token noto'g'ri");
-    }
-
-    const tokens = await this.UsergenerateToken(user);
-    const hashed_refresh_token = await bcrypt.hash(tokens.refreshToken, 7);
-
-    await this.updateRefreshToken(user.id, hashed_refresh_token);
-
-    res.cookie("refresh_token", tokens.refreshToken, {
-      maxAge: Number(process.env.COOKIE_TIME),
-      httpOnly: true,
-    });
-
-    return {
-      message: "Token refresh qilindi",
-      accessToken: tokens.accessToken,
-    };
+      data: {
+        hashed_refresh_token: null
+      },
+    })
+    if(!user) throw new ForbiddenException("Access Denied")
+      res.clearCookie("refreshToken")
+    return true
   }
 }
